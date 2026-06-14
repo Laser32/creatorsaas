@@ -1,0 +1,54 @@
+# .NET
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+*.nupkg
+*.snupkg
+.vs/
+.vscode/
+*.user
+*.suo
+packages/
+.editorconfig
+
+# Node / Frontend
+node_modules/
+dist/
+build/
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.mdf
+*.ldf
+Migrations/
+
+# Storage & Logs
+storage/
+logs/
+*.log
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Docker
+docker-compose.override.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Temp
+/temp
+/tmp
+*.tmp
+.cache/

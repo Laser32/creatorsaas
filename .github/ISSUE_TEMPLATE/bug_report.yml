@@ -1,0 +1,104 @@
+name: "🐛 Bug Report"
+description: "Report a bug to help us improve CreatorSaaS"
+title: "[BUG] "
+labels: ["bug", "triage"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug! Please provide as much detail as possible.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: "Describe the bug"
+      description: "Clear and concise description of what the bug is"
+      placeholder: "When I try to create a video with X topic, the system crashes with error Y..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: "Steps to reproduce"
+      description: "Steps to reproduce the behavior"
+      placeholder: |
+        1. Go to '...'
+        2. Click on '....'
+        3. Scroll down to '....'
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: "Expected behavior"
+      description: "What should happen instead?"
+      placeholder: "The video should be created successfully..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: "Actual behavior"
+      description: "What actually happens?"
+      placeholder: "The system returns a 500 error..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: "Error message or logs"
+      description: "Include any relevant error messages or logs"
+      render: bash
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: "Environment"
+      options:
+        - "Docker Compose (local)"
+        - "Kubernetes (dev)"
+        - "Kubernetes (prod)"
+        - "Standalone (local)"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: "Version"
+      description: "What version of CreatorSaaS are you running?"
+      placeholder: "v1.0.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: "Screenshots or video"
+      description: "If applicable, add screenshots or a video showing the bug"
+      placeholder: "You can paste images or video links here"
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: "Additional context"
+      description: "Any other context about the problem?"
+      placeholder: "This happens when..."
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: "Checklist"
+      options:
+        - label: "I have searched existing issues"
+          required: true
+        - label: "I have provided a clear title"
+          required: true
+        - label: "I have provided reproduction steps"
+          required: true

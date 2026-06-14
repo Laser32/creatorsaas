@@ -1,0 +1,28 @@
+# Build stage
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS builder
+WORKDIR /src
+
+COPY ["src/CreatorSaaS.Core/CreatorSaaS.Core.csproj", "CreatorSaaS.Core/"]
+COPY ["src/CreatorSaaS.Application/CreatorSaaS.Application.csproj", "CreatorSaaS.Application/"]
+COPY ["src/CreatorSaaS.Infrastructure/CreatorSaaS.Infrastructure.csproj", "CreatorSaaS.Infrastructure/"]
+COPY ["src/CreatorSaaS.API/CreatorSaaS.API.csproj", "CreatorSaaS.API/"]
+
+RUN dotnet restore "CreatorSaaS.API/CreatorSaaS.API.csproj"
+
+COPY src/ .
+RUN dotnet build "CreatorSaaS.API/CreatorSaaS.API.csproj" -c Release -o /app/build
+
+FROM builder AS publish
+RUN dotnet publish "CreatorSaaS.API/CreatorSaaS.API.csproj" -c Release -o /app/publish
+
+# Runtime stage
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+WORKDIR /app
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+
+COPY --from=publish /app/publish .
+
+ENV ASPNETCORE_URLS=http://+:5000
+EXPOSE 5000
+
+ENTRYPOINT ["dotnet", "CreatorSaaS.API.dll"]

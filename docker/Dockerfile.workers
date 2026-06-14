@@ -1,0 +1,29 @@
+# Build stage
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS builder
+WORKDIR /src
+
+COPY ["src/CreatorSaaS.Core/CreatorSaaS.Core.csproj", "CreatorSaaS.Core/"]
+COPY ["src/CreatorSaaS.Application/CreatorSaaS.Application.csproj", "CreatorSaaS.Application/"]
+COPY ["src/CreatorSaaS.Infrastructure/CreatorSaaS.Infrastructure.csproj", "CreatorSaaS.Infrastructure/"]
+COPY ["src/CreatorSaaS.Workers/CreatorSaaS.Workers.csproj", "CreatorSaaS.Workers/"]
+
+RUN dotnet restore "CreatorSaaS.Workers/CreatorSaaS.Workers.csproj"
+
+COPY src/ .
+RUN dotnet build "CreatorSaaS.Workers/CreatorSaaS.Workers.csproj" -c Release -o /app/build
+
+FROM builder AS publish
+RUN dotnet publish "CreatorSaaS.Workers/CreatorSaaS.Workers.csproj" -c Release -o /app/publish
+
+# Runtime stage
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+WORKDIR /app
+
+# Install FFmpeg
+RUN apt-get update && \
+    apt-get install -y ffmpeg && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=publish /app/publish .
+
+ENTRYPOINT ["dotnet", "CreatorSaaS.Workers.dll"]

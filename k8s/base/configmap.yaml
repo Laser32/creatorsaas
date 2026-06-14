@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: creatorsaas
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: creatorsaas-config
+  namespace: creatorsaas
+data:
+  ASPNETCORE_ENVIRONMENT: "Production"
+  Jwt__Issuer: "CreatorSaaS"
+  Jwt__Audience: "CreatorSaaS-Clients"
+  Jwt__ExpiryMinutes: "60"
+  AI__Provider: "openai"
+  ElevenLabs__Model: "eleven_multilingual_v2"
+  Storage__LocalPath: "/storage"
+  FFmpeg__Path: "/usr/bin/ffmpeg"
+  Hangfire__DashboardUser: "admin"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: creatorsaas-secrets
+  namespace: creatorsaas
+type: Opaque
+stringData:
+  DB_CONNECTION_STRING: "Host=postgres;Port=5432;Database=creatorsaas;Username=creatorsaas;Password=your_password"
+  REDIS_CONNECTION: "redis:6379"
+  JWT_SECRET: "your_super_secret_jwt_key_minimum_32_characters_long"
+  OPENAI_API_KEY: "sk-your-api-key"
+  ANTHROPIC_API_KEY: "sk-ant-your-api-key"
+  ELEVENLABS_API_KEY: "your-api-key"
+  PEXELS_API_KEY: "your-api-key"
+  YOUTUBE_CLIENT_ID: "your-client-id"
+  YOUTUBE_CLIENT_SECRET: "your-client-secret"
+  STRIPE_SECRET_KEY: "sk_live_your-key"
+  SENDGRID_API_KEY: "SG.your-api-key"
+  HANGFIRE_PASSWORD: "your_hangfire_password"

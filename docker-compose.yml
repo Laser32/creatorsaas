@@ -1,0 +1,106 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: creatorsaas_postgres
+    environment:
+      POSTGRES_USER: creatorsaas
+      POSTGRES_PASSWORD: your_strong_password_here
+      POSTGRES_DB: creatorsaas
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U creatorsaas"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - creatorsaas
+
+  redis:
+    image: redis:7-alpine
+    container_name: creatorsaas_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - creatorsaas
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: creatorsaas_api
+    ports:
+      - "5000:5000"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Default: "Host=postgres;Port=5432;Database=creatorsaas;Username=creatorsaas;Password=your_strong_password_here"
+      Redis__Connection: "redis:6379"
+      Jwt__Secret: "your_super_secret_jwt_key_minimum_32_characters_long"
+      Jwt__Issuer: "CreatorSaaS"
+      Jwt__Audience: "CreatorSaaS-Clients"
+      Jwt__ExpiryMinutes: "60"
+      OpenAI__ApiKey: "${OPENAI_API_KEY}"
+      OpenAI__Model: "gpt-4o"
+      Anthropic__ApiKey: "${ANTHROPIC_API_KEY}"
+      Anthropic__Model: "claude-opus-4-6"
+      AI__Provider: "openai"
+      ElevenLabs__ApiKey: "${ELEVENLABS_API_KEY}"
+      ElevenLabs__VoiceId: "21m00Tcm4TlvDq8ikWAM"
+      ElevenLabs__Model: "eleven_multilingual_v2"
+      Pexels__ApiKey: "${PEXELS_API_KEY}"
+      YouTube__ClientId: "${YOUTUBE_CLIENT_ID}"
+      YouTube__ClientSecret: "${YOUTUBE_CLIENT_SECRET}"
+      Stripe__SecretKey: "${STRIPE_SECRET_KEY}"
+      Stripe__PublishableKey: "${STRIPE_PUBLISHABLE_KEY}"
+      SendGrid__ApiKey: "${SENDGRID_API_KEY}"
+      Email__From: "noreply@creatorsaas.io"
+      Email__FromName: "CreatorSaaS"
+      Storage__LocalPath: "/app/storage"
+      FFmpeg__Path: "/usr/bin/ffmpeg"
+      Cors__AllowedOrigins: "http://localhost:3000,http://localhost:3001"
+      Hangfire__DashboardUser: "admin"
+      Hangfire__DashboardPassword: "your_hangfire_password"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./storage:/app/storage
+      - ./logs:/app/logs
+    networks:
+      - creatorsaas
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    container_name: creatorsaas_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      VITE_API_URL: "http://localhost:5000"
+    depends_on:
+      - api
+    networks:
+      - creatorsaas
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  creatorsaas:
+    driver: bridge

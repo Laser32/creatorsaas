@@ -1,0 +1,64 @@
+name: "✨ Feature Request"
+description: "Suggest an idea for CreatorSaaS"
+title: "[FEATURE] "
+labels: ["enhancement", "triage"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature! We appreciate your ideas.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Is your feature request related to a problem?"
+      description: "Describe the problem or use case"
+      placeholder: "I'm always frustrated when I can't..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: "Describe the solution you'd like"
+      description: "Clear and concise description of what you want to happen"
+      placeholder: "It would be great if the system could..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: "Describe alternatives you've considered"
+      description: "Any alternative solutions or features?"
+      placeholder: "Another approach could be..."
+
+  - type: textarea
+    id: benefits
+    attributes:
+      label: "Benefits"
+      description: "What benefits would this feature provide?"
+      placeholder: |
+        - Saves time by...
+        - Improves user experience...
+        - Enables new use cases...
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: "Additional context"
+      description: "Any other context or screenshots?"
+      placeholder: "You can add images or links here"
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: "Checklist"
+      options:
+        - label: "I have searched existing feature requests"
+          required: true
+        - label: "This feature would benefit other users"
+          required: false
+        - label: "I'm willing to help implement this"
+          required: false

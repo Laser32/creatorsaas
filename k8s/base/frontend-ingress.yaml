@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: creatorsaas-frontend
+  namespace: creatorsaas
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: creatorsaas-frontend
+  template:
+    metadata:
+      labels:
+        app: creatorsaas-frontend
+    spec:
+      containers:
+      - name: frontend
+        image: creatorsaas/frontend:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3000
+        env:
+        - name: VITE_API_URL
+          value: "https://api.creatorsaas.io"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "250m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: creatorsaas-frontend-svc
+  namespace: creatorsaas
+spec:
+  type: ClusterIP
+  selector:
+    app: creatorsaas-frontend
+  ports:
+  - port: 3000
+    targetPort: 3000
+    name: http
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: creatorsaas-ingress
+  namespace: creatorsaas
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+spec:
+  tls:
+  - hosts:
+    - creatorsaas.io
+    - api.creatorsaas.io
+    - hangfire.creatorsaas.io
+    secretName: creatorsaas-tls
+  rules:
+  - host: creatorsaas.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: creatorsaas-frontend-svc
+            port:
+              number: 3000
+  - host: api.creatorsaas.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: creatorsaas-api-svc
+            port:
+              number: 5000
+  - host: hangfire.creatorsaas.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: creatorsaas-api-svc
+            port:
+              number: 5000

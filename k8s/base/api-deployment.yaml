@@ -1,0 +1,152 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: creatorsaas-api
+  namespace: creatorsaas
+  labels:
+    app: creatorsaas-api
+    version: v1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: creatorsaas-api
+  template:
+    metadata:
+      labels:
+        app: creatorsaas-api
+        version: v1
+    spec:
+      containers:
+      - name: api
+        image: creatorsaas/api:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 5000
+          name: http
+        env:
+        - name: ASPNETCORE_ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: creatorsaas-config
+              key: ASPNETCORE_ENVIRONMENT
+        - name: ConnectionStrings__Default
+          valueFrom:
+            secretKeyRef:
+              name: creatorsaas-secrets
+              key: DB_CONNECTION_STRING
+        - name: Redis__Connection
+          valueFrom:
+            secretKeyRef:
+              name: creatorsaas-secrets
+              key: REDIS_CONNECTION
+        - name: Jwt__Secret
+          valueFrom:
+            secretKeyRef:
+              name: creatorsaas-secrets
+              key: JWT_SECRET
+        - name: OpenAI__ApiKey
+          valueFrom:
+            secretKeyRef:
+              name: creatorsaas-secrets
+              key: OPENAI_API_KEY
+        - name: ElevenLabs__ApiKey
+          valueFrom:
+            secretKeyRef:
+              name: creatorsaas-secrets
+              key: ELEVENLABS_API_KEY
+        - name: Pexels__ApiKey
+          valueFrom:
+            secretKeyRef:
+              name: creatorsaas-secrets
+              key: PEXELS_API_KEY
+        - name: YouTube__ClientId
+          valueFrom:
+            secretKeyRef:
+              name: creatorsaas-secrets
+              key: YOUTUBE_CLIENT_ID
+        - name: YouTube__ClientSecret
+          valueFrom:
+            secretKeyRef:
+              name: creatorsaas-secrets
+              key: YOUTUBE_CLIENT_SECRET
+        - name: Stripe__SecretKey
+          valueFrom:
+            secretKeyRef:
+              name: creatorsaas-secrets
+              key: STRIPE_SECRET_KEY
+        - name: SendGrid__ApiKey
+          valueFrom:
+            secretKeyRef:
+              name: creatorsaas-secrets
+              key: SENDGRID_API_KEY
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        volumeMounts:
+        - name: storage
+          mountPath: /storage
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: creatorsaas-storage-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: creatorsaas-api-svc
+  namespace: creatorsaas
+  labels:
+    app: creatorsaas-api
+spec:
+  type: ClusterIP
+  selector:
+    app: creatorsaas-api
+  ports:
+  - port: 5000
+    targetPort: 5000
+    name: http
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: creatorsaas-api-hpa
+  namespace: creatorsaas
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: creatorsaas-api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
