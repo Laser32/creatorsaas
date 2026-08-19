@@ -28,12 +28,24 @@ public static class YtDlpDownloader
     private const int UpdateIntervalDays = 7;
 
     /// <summary>
-    /// Player clients tried in order when YouTube answers 403. Each client uses a different
-    /// player API; YouTube blocks them individually, so a client that fails today often
-    /// works again next week. Clients unknown to the installed yt-dlp are skipped.
+    /// Player clients tried in order when YouTube blocks a download. Each client uses a
+    /// different player API and YouTube blocks them individually, so a client that fails
+    /// today often works again next week. Clients unknown to the installed yt-dlp are skipped.
+    ///
+    /// DropCookies matters as much as the client: account cookies make YouTube treat the
+    /// request as logged in, and it then demands a proof-of-origin token that yt-dlp cannot
+    /// produce on its own. Anonymous attempts frequently succeed where the same client fails
+    /// with cookies attached, so both variants are in the list.
     /// </summary>
-    private static readonly string[] PlayerClientFallbacks =
-        { "tv", "web_safari", "ios", "mweb", "tv_embedded" };
+    private static readonly (string Client, bool DropCookies)[] PlayerClientFallbacks =
+    {
+        ("tv",          false),
+        ("web_safari",  false),
+        ("ios",         true),
+        ("mweb",        false),
+        ("tv_embedded", true),
+        ("web",         true),
+    };
 
     private static bool _updateCheckedThisSession;
     private static bool _updateRanThisSession;
@@ -395,19 +407,21 @@ public static class YtDlpDownloader
                     return retry;
                 }
                 last = retry;
-                if (!IsForbidden(retry.stderr)) return retry;   // different problem now
+                if (IsTerminalError(retry.stderr)) return retry;   // the video is gone, not blocked
             }
         }
 
         // Caller already pinned a client (age-gate path) — don't fight it.
         if (args.Contains("player_client")) return last;
 
-        foreach (var client in PlayerClientFallbacks)
+        foreach (var (client, dropCookies) in PlayerClientFallbacks)
         {
             ct.ThrowIfCancellationRequested();
-            log?.Report($"  HTTP 403 — versuche Player-Client '{client}'...");
+            var attemptArgs = dropCookies ? StripCookieArgs(args) : args;
+            log?.Report($"  Blockiert — versuche Player-Client '{client}'" +
+                        (dropCookies ? " (ohne Cookies)..." : "..."));
 
-            var retry = await ExecAsync(ytDlp, $"--extractor-args \"youtube:player_client={client}\" " + args, ct);
+            var retry = await ExecAsync(ytDlp, $"--extractor-args \"youtube:player_client={client}\" " + attemptArgs, ct);
             if (retry.exit == 0)
             {
                 log?.Report($"  ✓ Player-Client '{client}' funktioniert.");
@@ -418,7 +432,11 @@ public static class YtDlpDownloader
             if (IsUnknownClientError(retry.stderr)) continue;
 
             last = retry;
-            if (!IsForbidden(retry.stderr)) return retry;   // a different error — stop guessing
+
+            // Every client answers a block differently ("403", "page needs to be reloaded",
+            // "sign in to confirm"...). Only the video itself being gone ends the chain —
+            // anything else is worth trying on the next client.
+            if (IsTerminalError(retry.stderr)) return retry;
         }
 
         return last;
@@ -467,7 +485,24 @@ public static class YtDlpDownloader
         stderr.Contains("unable to download video data", StringComparison.OrdinalIgnoreCase) ||
         stderr.Contains("not a bot", StringComparison.OrdinalIgnoreCase) ||
         stderr.Contains("failed to extract any player response", StringComparison.OrdinalIgnoreCase) ||
-        stderr.Contains("nsig extraction failed", StringComparison.OrdinalIgnoreCase);
+        stderr.Contains("nsig extraction failed", StringComparison.OrdinalIgnoreCase) ||
+        // The tv client's way of saying it needs a proof-of-origin token.
+        stderr.Contains("page needs to be reloaded", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("PO Token", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// True when the video itself is the problem, so trying another player client is pointless.
+    /// Everything else — however YouTube words the block — ends up on the next client.
+    /// </summary>
+    private static bool IsTerminalError(string stderr) =>
+        stderr.Contains("Private video", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("Video unavailable", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("members-only", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("has been removed", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("account associated with this video has been terminated", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("not available in your country", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("Unsupported URL", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("Incomplete YouTube ID", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsUnknownClientError(string stderr) =>
         stderr.Contains("player_client", StringComparison.OrdinalIgnoreCase) &&
@@ -490,10 +525,11 @@ public static class YtDlpDownloader
         var s = stderr.Trim();
 
         if (IsForbidden(s))
-            return "HTTP 403 — YouTube blockiert den Download. Update und alle Player-Clients " +
-                   "wurden erfolglos durchprobiert. Meist hilft: in den Einstellungen unter " +
-                   "'YtDlpCookiesBrowser' den Browser eintragen, in dem du bei YouTube eingeloggt " +
-                   $"bist (edge/chrome/firefox).\n{s}";
+            return "YouTube blockiert den Download. yt-dlp ist aktuell und alle Player-Clients " +
+                   "wurden mit und ohne Cookies erfolglos durchprobiert — YouTube verlangt fuer " +
+                   "dieses Video einen PO-Token. Moeglichkeiten: spaeter erneut versuchen (die " +
+                   "Sperren wechseln staendig), ein anderes Video nehmen, oder einen PO-Token-" +
+                   $"Provider als yt-dlp-Plugin installieren.\n{s}";
 
         if (s.Contains("Private video", StringComparison.OrdinalIgnoreCase) ||
             s.Contains("Video unavailable", StringComparison.OrdinalIgnoreCase) ||
