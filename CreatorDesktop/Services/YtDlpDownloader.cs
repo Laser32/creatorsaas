@@ -442,10 +442,17 @@ public static class YtDlpDownloader
         return last;
     }
 
-    /// <summary>Starts yt-dlp once and collects stdout/stderr.</summary>
+    /// <summary>
+    /// Starts yt-dlp once and collects stdout/stderr. Every call and its result go to the
+    /// log file — the command line and full stderr are what a later diagnosis needs, and
+    /// neither of them reaches the on-screen log.
+    /// </summary>
     private static async Task<(List<string> lines, string stderr, int exit)> ExecAsync(
         string ytDlp, string args, CancellationToken ct)
     {
+        RunLog.Write($"→ yt-dlp {args}");
+        var started = DateTime.Now;
+
         var lines = new List<string>();
         var psi = new ProcessStartInfo
         {
@@ -460,6 +467,17 @@ public static class YtDlpDownloader
             lines.Add(line);
         var stderr = await stderrTask;
         await p.WaitForExitAsync(ct);
+
+        var seconds = (DateTime.Now - started).TotalSeconds;
+        RunLog.Write($"← exit {p.ExitCode} nach {seconds:0.0}s, {lines.Count} Zeilen stdout");
+        if (p.ExitCode != 0)
+        {
+            RunLog.WriteBlock("  stderr:", stderr);
+            // --dump-json floods stdout with one huge line; the tail is enough to place the error.
+            var tail = lines.TakeLast(5).Select(l => l.Length > 300 ? l[..300] + " […]" : l);
+            RunLog.WriteBlock("  stdout (letzte Zeilen):", string.Join("\n", tail));
+        }
+
         return (lines, stderr, p.ExitCode);
     }
 

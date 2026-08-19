@@ -1363,6 +1363,7 @@ public class MainForm : Form
 
     private void AppendAutoLog(string s)
     {
+        RunLog.Write(s);
         if (_autoLogBox.InvokeRequired)
         {
             _autoLogBox.BeginInvoke(() => _autoLogBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {s}\r\n"));
@@ -2466,9 +2467,11 @@ public class MainForm : Form
     {
         if (_toolsLogBox.InvokeRequired)
         {
+            // Marshal first — this method calls itself, so logging here would double every line.
             _toolsLogBox.Invoke(() => ToolsLog(s));
             return;
         }
+        RunLog.Write(s);
         _toolsLogBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {s}\r\n");
         _toolsLogBox.SelectionStart = _toolsLogBox.TextLength;
         _toolsLogBox.ScrollToCaret();
@@ -2724,7 +2727,22 @@ public class MainForm : Form
             _ytDlpUpdateBtn.Top = 36 + sy; _ytDlpUpdateBtn.Left = 24;
             _ytDlpUpdateBtn.Click += async (_, _) => await UpdateYtDlpNow();
             section.Controls.Add(_ytDlpUpdateBtn);
-            sy += ButtonH + 12;
+
+            var openLogBtn = NewButton("Log-Ordner öffnen", 180);
+            openLogBtn.Top = 36 + sy; openLogBtn.Left = 24 + 230 + 10;
+            openLogBtn.Click += (_, _) => OpenLogFolder();
+            section.Controls.Add(openLogBtn);
+            sy += ButtonH + 8;
+
+            section.Controls.Add(new Label
+            {
+                Text = "Jeder Lauf wird mitgeschrieben (eine Datei pro Tag, 14 Tage) — inklusive " +
+                       "der kompletten yt-dlp-Ausgabe, die oben im Log nicht auftaucht.",
+                Font = FontHint, ForeColor = HintColor,
+                Top = 36 + sy, Left = 24, Width = section.Width - 48, Height = 34,
+                TextAlign = ContentAlignment.TopLeft, AutoSize = false
+            });
+            sy += 40;
             return sy;
         });
 
@@ -3663,6 +3681,26 @@ public class MainForm : Form
         }
         _settings.Save();
         MessageBox.Show(this, "Einstellungen gespeichert.", "OK", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    /// <summary>Opens the log folder in Explorer, selecting today's file if it exists.</summary>
+    private void OpenLogFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(RunLog.Dir);
+            var today = RunLog.TodayPath;
+            var psi = File.Exists(today)
+                ? new ProcessStartInfo("explorer.exe", $"/select,\"{today}\"")
+                : new ProcessStartInfo("explorer.exe", $"\"{RunLog.Dir}\"");
+            psi.UseShellExecute = true;
+            Process.Start(psi);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Log-Ordner: {RunLog.Dir}\r\n\r\n{ex.Message}",
+                "Ordner konnte nicht geöffnet werden", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     /// <summary>
