@@ -6,13 +6,37 @@ using CreatorDesktop.Models;
 namespace CreatorDesktop.Services;
 
 /// <summary>
-/// Downloads yt-dlp.exe on first use (single-file, ~11 MB from GitHub releases).
-/// yt-dlp is needed to download Creative Commons YouTube videos with their original audio.
+/// Downloads yt-dlp.exe on first use (single-file, ~11 MB from GitHub releases) and keeps
+/// it up to date. yt-dlp is needed to download Creative Commons YouTube videos with their
+/// original audio.
+///
+/// YouTube changes its player API every few weeks. A yt-dlp.exe that was downloaded once
+/// and never refreshed starts failing with "HTTP Error 403: Forbidden" — the metadata still
+/// extracts fine, but the actual media URLs are rejected. That is why EnsureAsync runs a
+/// periodic self-update and why RunYtDlpAsync retries a 403 with other player clients.
 /// </summary>
 public static class YtDlpDownloader
 {
     private static readonly string YtDlpPath =
         Path.Combine(AppSettings.DefaultDataDir, "yt-dlp.exe");
+
+    /// <summary>Timestamp file recording the last successful update check.</summary>
+    private static readonly string UpdateStampPath =
+        Path.Combine(AppSettings.DefaultDataDir, "yt-dlp.updated");
+
+    /// <summary>How often EnsureAsync checks for a new yt-dlp release.</summary>
+    private const int UpdateIntervalDays = 7;
+
+    /// <summary>
+    /// Player clients tried in order when YouTube answers 403. Each client uses a different
+    /// player API; YouTube blocks them individually, so a client that fails today often
+    /// works again next week. Clients unknown to the installed yt-dlp are skipped.
+    /// </summary>
+    private static readonly string[] PlayerClientFallbacks =
+        { "tv", "web_safari", "ios", "mweb", "tv_embedded" };
+
+    private static bool _updateCheckedThisSession;
+    private static bool _updateRanThisSession;
 
     /// <summary>
     /// Returns the appropriate --cookies-from-browser or --cookies argument so every
@@ -21,39 +45,35 @@ public static class YtDlpDownloader
     /// </summary>
     public static string CookieArg()
     {
-        try
-        {
-            var path = Path.Combine(AppSettings.DefaultDataDir, "settings.json");
-            if (!File.Exists(path)) return "";
-            using var doc = JsonDocument.Parse(File.ReadAllText(path));
-            var root = doc.RootElement;
+        var browser = ReadStringSetting("YtDlpCookiesBrowser");
+        if (!string.IsNullOrWhiteSpace(browser))
+            return $"--cookies-from-browser {browser} ";
 
-            // Prefer browser-based cookies (no manual export needed)
-            if (root.TryGetProperty("YtDlpCookiesBrowser", out var bEl))
-            {
-                var browser = bEl.GetString();
-                if (!string.IsNullOrWhiteSpace(browser))
-                    return $"--cookies-from-browser {browser} ";
-            }
+        var cookies = ReadStringSetting("YtDlpCookiesPath");
+        if (!string.IsNullOrWhiteSpace(cookies) && File.Exists(cookies))
+            return $"--cookies \"{cookies}\" ";
 
-            // Fallback: manual cookies.txt file
-            if (root.TryGetProperty("YtDlpCookiesPath", out var fEl))
-            {
-                var cookies = fEl.GetString();
-                if (!string.IsNullOrWhiteSpace(cookies) && File.Exists(cookies))
-                    return $"--cookies \"{cookies}\" ";
-            }
-        }
-        catch { /* fall through to empty */ }
         return "";
     }
 
     public static async Task<string> EnsureAsync(IProgress<string>? log, CancellationToken ct)
     {
         if (File.Exists(YtDlpPath))
+        {
+            await MaybeUpdateAsync(log, ct);
             return YtDlpPath;
+        }
 
         log?.Report("Lade yt-dlp.exe herunter (einmalig, ~11 MB)...");
+        await DownloadLatestAsync(ct);
+        MarkUpdateChecked();
+        log?.Report("yt-dlp.exe bereit.");
+        return YtDlpPath;
+    }
+
+    /// <summary>Fetches the current yt-dlp.exe from GitHub releases, replacing any existing copy.</summary>
+    private static async Task DownloadLatestAsync(CancellationToken ct)
+    {
         Directory.CreateDirectory(AppSettings.DefaultDataDir);
 
         using var http = new HttpClient();
@@ -77,8 +97,94 @@ public static class YtDlpDownloader
 
         var bytes = await http.GetByteArrayAsync(downloadUrl, ct);
         await File.WriteAllBytesAsync(YtDlpPath, bytes, ct);
-        log?.Report("yt-dlp.exe bereit.");
-        return YtDlpPath;
+    }
+
+    /// <summary>
+    /// Runs the update check at most once per session and at most every UpdateIntervalDays.
+    /// Set "YtDlpAutoUpdate": false in settings.json to skip it entirely.
+    /// </summary>
+    private static async Task MaybeUpdateAsync(IProgress<string>? log, CancellationToken ct)
+    {
+        if (_updateCheckedThisSession) return;
+        _updateCheckedThisSession = true;
+
+        if (!ReadBoolSetting("YtDlpAutoUpdate", true)) return;
+
+        var last = LastUpdateCheckUtc();
+        if (last != null && (DateTime.UtcNow - last.Value).TotalDays < UpdateIntervalDays)
+            return;
+
+        await UpdateAsync(log, ct);
+    }
+
+    /// <summary>
+    /// Updates yt-dlp.exe in place (yt-dlp -U) and clears its player cache. Falls back to a
+    /// fresh download from GitHub when the self-update cannot replace the file (locked,
+    /// missing permissions, or a build without the updater). Returns true if yt-dlp is
+    /// current afterwards. Never throws — an update failure must not kill the download.
+    /// </summary>
+    public static async Task<bool> UpdateAsync(IProgress<string>? log, CancellationToken ct)
+    {
+        _updateRanThisSession = true;
+        // The updater talks to GitHub; cap it so a hanging request cannot block the pipeline.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromMinutes(3));
+
+        try
+        {
+            log?.Report("  Pruefe auf yt-dlp-Update...");
+            var (lines, stderr, exit) = await ExecAsync(YtDlpPath, "-U", timeout.Token);
+
+            if (exit != 0)
+            {
+                log?.Report("  Selbst-Update fehlgeschlagen — lade yt-dlp.exe neu herunter...");
+                await DownloadLatestAsync(timeout.Token);
+            }
+            else
+            {
+                var status = lines.LastOrDefault(l => l.Contains("yt-dlp", StringComparison.OrdinalIgnoreCase));
+                log?.Report("  " + (status ?? "yt-dlp ist aktuell."));
+                if (!string.IsNullOrWhiteSpace(stderr))
+                    log?.Report("  " + stderr.Trim());
+            }
+
+            // A stale player cache reproduces the same 403 even with a fresh binary.
+            await ExecAsync(YtDlpPath, "--rm-cache-dir", timeout.Token);
+            MarkUpdateChecked();
+            return true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;   // user cancelled — propagate
+        }
+        catch (Exception ex)
+        {
+            log?.Report($"  yt-dlp-Update fehlgeschlagen: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static DateTime? LastUpdateCheckUtc()
+    {
+        try
+        {
+            if (!File.Exists(UpdateStampPath)) return null;
+            var text = File.ReadAllText(UpdateStampPath).Trim();
+            return DateTime.TryParse(text, null, System.Globalization.DateTimeStyles.RoundtripKind, out var dt)
+                ? dt.ToUniversalTime()
+                : (DateTime?)null;
+        }
+        catch { return null; }
+    }
+
+    private static void MarkUpdateChecked()
+    {
+        try
+        {
+            Directory.CreateDirectory(AppSettings.DefaultDataDir);
+            File.WriteAllText(UpdateStampPath, DateTime.UtcNow.ToString("o"));
+        }
+        catch { /* stamp is best-effort — a missing stamp only means we check again */ }
     }
 
     /// <summary>
@@ -126,7 +232,7 @@ public static class YtDlpDownloader
         }
 
         if (exit != 0 && results.Count == 0)
-            throw new InvalidOperationException($"yt-dlp Fehler: {stderr.Trim()}");
+            throw new InvalidOperationException($"yt-dlp Fehler: {DescribeFailure(stderr)}");
 
         log?.Report($"  {results.Count} Videos gefunden.");
         return results;
@@ -169,6 +275,8 @@ public static class YtDlpDownloader
                    mergeArg +
                    ffmpegLocationArg +
                    CookieArg() +
+                   // Single fragments are dropped under load — retry them before giving up.
+                   $"--retries 10 --fragment-retries 10 " +
                    $"--no-warnings --no-playlist " +
                    $"-o \"{outTemplate}\" " +
                    $"\"{url}\"";
@@ -177,7 +285,7 @@ public static class YtDlpDownloader
         foreach (var l in dlLines) log?.Report("  " + l);
 
         if (exit != 0)
-            throw new InvalidOperationException($"yt-dlp Fehler (exit {exit}): {stderr}");
+            throw new InvalidOperationException($"yt-dlp Fehler (exit {exit}): {DescribeFailure(stderr)}");
 
         var mp4 = Path.Combine(outputDir, $"yt_{videoId}.mp4");
         if (File.Exists(mp4)) return mp4;
@@ -230,12 +338,95 @@ public static class YtDlpDownloader
     }
 
     /// <summary>
-    /// Runs yt-dlp with the given args. If the browser cookie DB is locked (browser open),
-    /// automatically retries once without --cookies-from-browser.
-    /// Returns (stdout lines, stderr).
+    /// Runs yt-dlp with the given args and recovers from the three failures YouTube throws
+    /// at us: a locked browser cookie DB, an age gate, and a 403 on the media URLs.
+    /// Returns (stdout lines, stderr, exit code) of the last attempt.
     /// </summary>
     public static async Task<(List<string> lines, string stderr, int exit)> RunYtDlpAsync(
         string ytDlp, string args, IProgress<string>? log, CancellationToken ct)
+    {
+        var result = await ExecAsync(ytDlp, args, ct);
+        if (result.exit == 0) return result;
+
+        // Browser cookie errors — DB locked, DPAPI session mismatch, etc. — retry without cookies
+        if (IsCookieError(result.stderr) || IsAgeError(result.stderr))
+        {
+            var cleaned = StripCookieArgs(args);
+            if (IsAgeError(result.stderr) && !cleaned.Contains("player_client"))
+            {
+                // tv_embedded serves age-restricted videos without a login.
+                cleaned = "--extractor-args \"youtube:player_client=tv_embedded,web_safari\" " + cleaned;
+                log?.Report("  Hinweis: Altersbeschraenkung — versuche tv_embedded Player...");
+            }
+            else
+            {
+                log?.Report("  Hinweis: Browser-Cookies gesperrt — versuche ohne Cookies...");
+            }
+
+            result = await ExecAsync(ytDlp, cleaned, ct);
+            if (result.exit == 0) return result;
+            args = cleaned;   // keep going without the broken cookies
+        }
+
+        if (IsForbidden(result.stderr))
+            result = await RetryForbiddenAsync(ytDlp, args, result, log, ct);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Recovers from "HTTP Error 403: Forbidden". Two causes, tried in that order:
+    /// an outdated yt-dlp (by far the most common — YouTube's player changed under it),
+    /// and a player client that YouTube currently blocks without a proof-of-origin token.
+    /// </summary>
+    private static async Task<(List<string> lines, string stderr, int exit)> RetryForbiddenAsync(
+        string ytDlp, string args, (List<string> lines, string stderr, int exit) last,
+        IProgress<string>? log, CancellationToken ct)
+    {
+        if (!_updateRanThisSession)
+        {
+            log?.Report("  HTTP 403 — yt-dlp ist vermutlich veraltet, aktualisiere...");
+            if (await UpdateAsync(log, ct))
+            {
+                var retry = await ExecAsync(ytDlp, args, ct);
+                if (retry.exit == 0)
+                {
+                    log?.Report("  ✓ Nach dem Update erfolgreich.");
+                    return retry;
+                }
+                last = retry;
+                if (!IsForbidden(retry.stderr)) return retry;   // different problem now
+            }
+        }
+
+        // Caller already pinned a client (age-gate path) — don't fight it.
+        if (args.Contains("player_client")) return last;
+
+        foreach (var client in PlayerClientFallbacks)
+        {
+            ct.ThrowIfCancellationRequested();
+            log?.Report($"  HTTP 403 — versuche Player-Client '{client}'...");
+
+            var retry = await ExecAsync(ytDlp, $"--extractor-args \"youtube:player_client={client}\" " + args, ct);
+            if (retry.exit == 0)
+            {
+                log?.Report($"  ✓ Player-Client '{client}' funktioniert.");
+                return retry;
+            }
+
+            // This yt-dlp build doesn't know the client — not a real result, try the next one.
+            if (IsUnknownClientError(retry.stderr)) continue;
+
+            last = retry;
+            if (!IsForbidden(retry.stderr)) return retry;   // a different error — stop guessing
+        }
+
+        return last;
+    }
+
+    /// <summary>Starts yt-dlp once and collects stdout/stderr.</summary>
+    private static async Task<(List<string> lines, string stderr, int exit)> ExecAsync(
+        string ytDlp, string args, CancellationToken ct)
     {
         var lines = new List<string>();
         var psi = new ProcessStartInfo
@@ -251,49 +442,97 @@ public static class YtDlpDownloader
             lines.Add(line);
         var stderr = await stderrTask;
         await p.WaitForExitAsync(ct);
-
-        // Browser cookie errors — DB locked, DPAPI session mismatch, etc. — retry without cookies
-        bool isCookieErr = stderr.Contains("could not copy", StringComparison.OrdinalIgnoreCase) ||
-                           stderr.Contains("database is locked", StringComparison.OrdinalIgnoreCase) ||
-                           stderr.Contains("failed to decrypt", StringComparison.OrdinalIgnoreCase) ||
-                           stderr.Contains("dpapi", StringComparison.OrdinalIgnoreCase) ||
-                           stderr.Contains("cookies-from-browser", StringComparison.OrdinalIgnoreCase);
-        bool isAgeErr = stderr.Contains("confirm your age", StringComparison.OrdinalIgnoreCase) ||
-                        stderr.Contains("age-restricted", StringComparison.OrdinalIgnoreCase) ||
-                        stderr.Contains("inappropriate for some users", StringComparison.OrdinalIgnoreCase);
-
-        if (isCookieErr || isAgeErr)
-        {
-            // Strip cookies (broken) and add tv_embedded player client which bypasses age gate
-            var argsCleaned = System.Text.RegularExpressions.Regex.Replace(
-                args, @"--cookies-from-browser\s+\S+\s*", "");
-            if (isAgeErr && !argsCleaned.Contains("player_client"))
-            {
-                argsCleaned = "--extractor-args \"youtube:player_client=tv_embedded,web\" " + argsCleaned;
-                log?.Report("  Hinweis: Altersbeschränkung — versuche tv_embedded Player...");
-            }
-            else
-            {
-                log?.Report("  Hinweis: Browser-Cookies gesperrt — versuche ohne Cookies...");
-            }
-            var lines2 = new List<string>();
-            var psi2 = new ProcessStartInfo
-            {
-                FileName = ytDlp, Arguments = argsCleaned,
-                RedirectStandardOutput = true, RedirectStandardError = true,
-                UseShellExecute = false, CreateNoWindow = true
-            };
-            using var p2 = Process.Start(psi2)!;
-            var stderr2Task = p2.StandardError.ReadToEndAsync(ct);
-            string? line2;
-            while ((line2 = await p2.StandardOutput.ReadLineAsync(ct)) != null)
-                lines2.Add(line2);
-            var stderr2 = await stderr2Task;
-            await p2.WaitForExitAsync(ct);
-            return (lines2, stderr2, p2.ExitCode);
-        }
-
         return (lines, stderr, p.ExitCode);
+    }
+
+    private static bool IsCookieError(string stderr) =>
+        stderr.Contains("could not copy", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("database is locked", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("failed to decrypt", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("dpapi", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("cookies-from-browser", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsAgeError(string stderr) =>
+        stderr.Contains("confirm your age", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("age-restricted", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("inappropriate for some users", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// True for the whole 403 family: the media URLs are rejected, the player response is
+    /// missing, or YouTube demands a bot check — all fixed by the same update/client retry.
+    /// </summary>
+    private static bool IsForbidden(string stderr) =>
+        stderr.Contains("HTTP Error 403", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("403: Forbidden", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("unable to download video data", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("not a bot", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("failed to extract any player response", StringComparison.OrdinalIgnoreCase) ||
+        stderr.Contains("nsig extraction failed", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsUnknownClientError(string stderr) =>
+        stderr.Contains("player_client", StringComparison.OrdinalIgnoreCase) &&
+        (stderr.Contains("invalid", StringComparison.OrdinalIgnoreCase) ||
+         stderr.Contains("unsupported", StringComparison.OrdinalIgnoreCase) ||
+         stderr.Contains("unknown", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Removes both cookie flavours so a retry cannot trip over the same broken cookies.</summary>
+    private static string StripCookieArgs(string args)
+    {
+        args = System.Text.RegularExpressions.Regex.Replace(
+            args, @"--cookies-from-browser\s+\S+\s*", "");
+        return System.Text.RegularExpressions.Regex.Replace(
+            args, @"--cookies\s+""[^""]*""\s*", "");
+    }
+
+    /// <summary>Turns yt-dlp's stderr into something the user can act on.</summary>
+    private static string DescribeFailure(string stderr)
+    {
+        var s = stderr.Trim();
+
+        if (IsForbidden(s))
+            return "HTTP 403 — YouTube blockiert den Download. Update und alle Player-Clients " +
+                   "wurden erfolglos durchprobiert. Meist hilft: in den Einstellungen unter " +
+                   "'YtDlpCookiesBrowser' den Browser eintragen, in dem du bei YouTube eingeloggt " +
+                   $"bist (edge/chrome/firefox).\n{s}";
+
+        if (s.Contains("Private video", StringComparison.OrdinalIgnoreCase) ||
+            s.Contains("Video unavailable", StringComparison.OrdinalIgnoreCase) ||
+            s.Contains("members-only", StringComparison.OrdinalIgnoreCase))
+            return $"Video ist nicht (mehr) oeffentlich abrufbar.\n{s}";
+
+        if (IsAgeError(s))
+            return $"Altersbeschraenktes Video — Cookies eines eingeloggten Kontos noetig.\n{s}";
+
+        return s;
+    }
+
+    private static string? ReadStringSetting(string key)
+    {
+        try
+        {
+            var path = Path.Combine(AppSettings.DefaultDataDir, "settings.json");
+            if (!File.Exists(path)) return null;
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            return doc.RootElement.TryGetProperty(key, out var el) && el.ValueKind == JsonValueKind.String
+                ? el.GetString()
+                : null;
+        }
+        catch { return null; }
+    }
+
+    private static bool ReadBoolSetting(string key, bool fallback)
+    {
+        try
+        {
+            var path = Path.Combine(AppSettings.DefaultDataDir, "settings.json");
+            if (!File.Exists(path)) return fallback;
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            if (doc.RootElement.TryGetProperty(key, out var el) &&
+                (el.ValueKind == JsonValueKind.True || el.ValueKind == JsonValueKind.False))
+                return el.GetBoolean();
+        }
+        catch { /* fall through */ }
+        return fallback;
     }
 
     private static string EscapeQuery(string s) => s.Replace("\"", " ").Trim();

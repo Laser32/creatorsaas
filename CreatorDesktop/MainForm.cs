@@ -146,6 +146,8 @@ public class MainForm : Form
     private NumericUpDown _scheduleDaysBox = null!;
     private NumericUpDown _scheduleHourBox = null!;
     private ComboBox _cookiesBrowserBox = null!;
+    private CheckBox _ytDlpAutoUpdateCheck = null!;
+    private Button _ytDlpUpdateBtn = null!;
 
     private CancellationTokenSource? _cts;
     private CancellationTokenSource? _queueCts;
@@ -2676,7 +2678,7 @@ public class MainForm : Form
         y += 44;
 
         // ── YouTube Bot-Check ─────────────────────────────────────────────────
-        y = AddSection(content, y, innerW, "0. YouTube Bot-Check beheben (wichtig!)", section =>
+        y = AddSection(content, y, innerW, "0. YouTube Bot-Check / 403 beheben (wichtig!)", section =>
         {
             int sy = 16;
             section.Controls.Add(new Label
@@ -2684,12 +2686,13 @@ public class MainForm : Form
                 Text = "Wenn yt-dlp den Fehler \"Sign in to confirm you're not a bot\" zeigt:\n" +
                        "1. Edge auf diesem Server öffnen und bei youtube.com einloggen.\n" +
                        "2. Unten \"Edge\" auswählen und Einstellungen speichern — fertig.\n" +
-                       "   (Alternativ \"Keiner\" wenn kein Browser installiert ist.)",
+                       "   (Alternativ \"Keiner\" wenn kein Browser installiert ist.)\n" +
+                       "Bei \"HTTP Error 403: Forbidden\" ist meist yt-dlp veraltet — unten aktualisieren.",
                 Font = FontHint, ForeColor = HintColor,
-                Top = 36 + sy, Left = 24, Width = section.Width - 48, Height = 66,
+                Top = 36 + sy, Left = 24, Width = section.Width - 48, Height = 82,
                 TextAlign = ContentAlignment.TopLeft, AutoSize = false
             });
-            sy += 72;
+            sy += 88;
             _cookiesBrowserBox = new ComboBox
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
@@ -2707,6 +2710,21 @@ public class MainForm : Form
                 TextAlign = ContentAlignment.MiddleLeft, AutoSize = false
             });
             sy += LabelH + 8;
+
+            _ytDlpAutoUpdateCheck = new CheckBox
+            {
+                Text = "yt-dlp automatisch aktuell halten (empfohlen)",
+                Font = FontLabel, ForeColor = TextDark, Checked = true,
+                Top = 36 + sy, Left = 24, Width = section.Width - 48, Height = 26, AutoSize = false
+            };
+            section.Controls.Add(_ytDlpAutoUpdateCheck);
+            sy += 30;
+
+            _ytDlpUpdateBtn = NewButton("yt-dlp jetzt aktualisieren", 230);
+            _ytDlpUpdateBtn.Top = 36 + sy; _ytDlpUpdateBtn.Left = 24;
+            _ytDlpUpdateBtn.Click += async (_, _) => await UpdateYtDlpNow();
+            section.Controls.Add(_ytDlpUpdateBtn);
+            sy += ButtonH + 12;
             return sy;
         });
 
@@ -3535,6 +3553,7 @@ public class MainForm : Form
         var browserVal = string.IsNullOrWhiteSpace(_settings.YtDlpCookiesBrowser) ? "Keiner" : _settings.YtDlpCookiesBrowser;
         _cookiesBrowserBox.SelectedItem = browserVal;
         if (_cookiesBrowserBox.SelectedIndex < 0) _cookiesBrowserBox.SelectedIndex = 0;
+        _ytDlpAutoUpdateCheck.Checked = _settings.YtDlpAutoUpdate;
         UpdateYtStatus();
 
         // Create tab
@@ -3636,6 +3655,7 @@ public class MainForm : Form
         _settings.ScheduleHour = (int)_scheduleHourBox.Value;
         var selectedBrowser = _cookiesBrowserBox.SelectedItem?.ToString() ?? "Keiner";
         _settings.YtDlpCookiesBrowser = selectedBrowser == "Keiner" ? "" : selectedBrowser;
+        _settings.YtDlpAutoUpdate = _ytDlpAutoUpdateCheck.Checked;
         if (!string.IsNullOrWhiteSpace(_outputFolder.Text))
         {
             _settings.OutputFolder = _outputFolder.Text.Trim();
@@ -3643,6 +3663,38 @@ public class MainForm : Form
         }
         _settings.Save();
         MessageBox.Show(this, "Einstellungen gespeichert.", "OK", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    /// <summary>
+    /// Forces a yt-dlp update from the settings tab. YouTube's player API changes every few
+    /// weeks — an outdated yt-dlp.exe is the usual cause of "HTTP Error 403: Forbidden".
+    /// </summary>
+    private async Task UpdateYtDlpNow()
+    {
+        _ytDlpUpdateBtn.Enabled = false;
+        var oldText = _ytDlpUpdateBtn.Text;
+        _ytDlpUpdateBtn.Text = "Aktualisiere...";
+        var log = (IProgress<string>)new Progress<string>(AppendAutoLog);
+        try
+        {
+            await YtDlpDownloader.EnsureAsync(log, CancellationToken.None);
+            var ok = await YtDlpDownloader.UpdateAsync(log, CancellationToken.None);
+            MessageBox.Show(this,
+                ok ? "yt-dlp ist jetzt aktuell. Details stehen im Auto-Log."
+                   : "Update fehlgeschlagen — Details stehen im Auto-Log.",
+                "yt-dlp", MessageBoxButtons.OK,
+                ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        }
+        catch (Exception ex)
+        {
+            AppendAutoLog($"yt-dlp-Update fehlgeschlagen: {ex.Message}");
+            MessageBox.Show(this, ex.Message, "yt-dlp", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            _ytDlpUpdateBtn.Text = oldText;
+            _ytDlpUpdateBtn.Enabled = true;
+        }
     }
 
     private void UpdateYtStatus()

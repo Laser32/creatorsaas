@@ -144,6 +144,11 @@ public class AppSettings
     // Path to a Netscape-format cookies.txt (fallback if no browser is set).
     public string YtDlpCookiesPath { get; set; } = "";
 
+    // Keep yt-dlp.exe current (checked once per week, plus immediately after an HTTP 403).
+    // YouTube changes its player API constantly — an outdated yt-dlp is the usual cause of
+    // "HTTP Error 403: Forbidden". Only turn this off if you manage yt-dlp.exe yourself.
+    public bool YtDlpAutoUpdate { get; set; } = true;
+
     // CC-only mode: fetch + concat Creative Commons YouTube videos, no AI/TTS
     public bool CcOnlyMode { get; set; } = false;
 
