@@ -523,9 +523,15 @@ public class YouTubeService
 
     /// <summary>
     /// Returns the playlist ID for the given topic, creating the playlist if it doesn't exist yet.
+    /// The channel is checked for a playlist of that name first — without it every call would
+    /// create another duplicate whenever the cached ID in settings is missing.
     /// </summary>
     public async Task<string> EnsurePlaylistAsync(string topic, string accessToken, CancellationToken ct)
     {
+        var existing = (await ListMyPlaylistsAsync(accessToken, ct))
+            .FirstOrDefault(p => string.Equals(p.Name, topic, StringComparison.OrdinalIgnoreCase));
+        if (existing != null) return existing.Id;
+
         // Create playlist
         var metaNode = new JsonObject
         {
@@ -550,6 +556,85 @@ public class YouTubeService
 
         using var doc = JsonDocument.Parse(body);
         return doc.RootElement.GetProperty("id").GetString()!;
+    }
+
+    /// <summary>
+    /// Puts an uploaded video into the playlist for its topic when AutoPlaylist is on,
+    /// creating that playlist on first use and caching its ID in settings so later uploads
+    /// reuse it. Accepts a watch URL or a bare video ID.
+    ///
+    /// Never throws: a playlist that cannot be filled must not fail an upload that already
+    /// succeeded. A cached ID pointing at a deleted playlist is dropped and resolved once more.
+    /// </summary>
+    public async Task AutoAddToTopicPlaylistAsync(
+        string videoUrlOrId, string topic, string? accessToken,
+        IProgress<string>? log, CancellationToken ct)
+    {
+        if (!_settings.AutoPlaylist) return;
+
+        var videoId = ExtractVideoId(videoUrlOrId);
+        if (string.IsNullOrWhiteSpace(videoId) || string.IsNullOrWhiteSpace(topic)) return;
+
+        try
+        {
+            accessToken ??= await EnsureAccessTokenAsync(log, ct);
+
+            if (!_settings.TopicPlaylistIds.TryGetValue(topic, out var playlistId) ||
+                string.IsNullOrWhiteSpace(playlistId))
+            {
+                playlistId = await EnsurePlaylistAsync(topic, accessToken, ct);
+                _settings.TopicPlaylistIds[topic] = playlistId;
+                _settings.Save();
+                log?.Report($"  Themen-Playlist \"{topic}\": {playlistId}");
+            }
+
+            try
+            {
+                await AddToPlaylistAsync(playlistId, videoId, accessToken, ct);
+            }
+            catch (Exception)
+            {
+                // Cached playlist is gone (deleted on YouTube) — forget it and resolve again.
+                log?.Report($"  Playlist \"{topic}\" nicht mehr erreichbar — lege sie neu an.");
+                _settings.TopicPlaylistIds.Remove(topic);
+                playlistId = await EnsurePlaylistAsync(topic, accessToken, ct);
+                _settings.TopicPlaylistIds[topic] = playlistId;
+                _settings.Save();
+                await AddToPlaylistAsync(playlistId, videoId, accessToken, ct);
+            }
+
+            log?.Report($"  ✓ In Themen-Playlist \"{topic}\" eingefügt.");
+        }
+        catch (Exception ex)
+        {
+            log?.Report($"  Auto-Playlist übersprungen ({topic}): {ex.Message}");
+        }
+    }
+
+    /// <summary>Pulls the video ID out of a watch URL; passes a bare ID through unchanged.</summary>
+    public static string ExtractVideoId(string urlOrId)
+    {
+        if (string.IsNullOrWhiteSpace(urlOrId)) return "";
+        var s = urlOrId.Trim();
+        if (!s.Contains('/') && !s.Contains('=')) return s;
+
+        var marker = s.IndexOf("v=", StringComparison.Ordinal);
+        if (marker >= 0)
+        {
+            var rest = s[(marker + 2)..];
+            var end = rest.IndexOfAny(['&', '#', '?']);
+            return end >= 0 ? rest[..end] : rest;
+        }
+
+        // Short form: https://youtu.be/<id>
+        var slash = s.LastIndexOf('/');
+        if (slash >= 0 && slash < s.Length - 1)
+        {
+            var rest = s[(slash + 1)..];
+            var end = rest.IndexOfAny(['&', '#', '?']);
+            return end >= 0 ? rest[..end] : rest;
+        }
+        return "";
     }
 
     /// <summary>Adds a video to an existing playlist.</summary>

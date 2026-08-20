@@ -55,6 +55,8 @@ public class QueueProcessor
                     job, job.OutputVideoPath, job.ThumbnailPath,
                     _settings.UploadVisibility, log, ct);
                 log.Report($"✓ Auf YouTube: {url}");
+
+                await yt.AutoAddToTopicPlaylistAsync(url, topic, null, log, ct);
             }
 
             // Remove processed topic from queue

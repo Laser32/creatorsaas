@@ -19,6 +19,7 @@ public class MainForm : Form
     private CheckBox _ccMergeCheck = null!;
     private CheckBox _ccShortsCheck = null!;
     private CheckedListBox _playlistList = null!;
+    private CheckBox _autoPlaylistCheck = null!;
     private List<PlaylistEntry> _playlists = new();
 
     // Competitor tracker
@@ -892,6 +893,22 @@ public class MainForm : Form
         y += 40;
 
         // ── Playlist-Auswahl (manuell verwaltet) ────────────────────────────
+        _autoPlaylistCheck = new CheckBox
+        {
+            Text = "Automatisch eine Playlist pro Thema anlegen und Uploads dort einsortieren",
+            Font = FontLabel, ForeColor = TextDark, Checked = true,
+            Top = y, Left = PadX, Width = innerW, Height = 26, AutoSize = false
+        };
+        _autoPlaylistCheck.CheckedChanged += (_, _) =>
+        {
+            // Also fires while loading settings into the form — don't rewrite the file for that.
+            if (_settings.AutoPlaylist == _autoPlaylistCheck.Checked) return;
+            _settings.AutoPlaylist = _autoPlaylistCheck.Checked;
+            _settings.Save();
+        };
+        content.Controls.Add(_autoPlaylistCheck);
+        y += 30;
+
         content.Controls.Add(new Label
         {
             Text = "Playlists (Häkchen = Video wird nach Upload eingefügt):",
@@ -3600,6 +3617,7 @@ public class MainForm : Form
         _ccOnlyCheck.Checked = _settings.CcOnlyMode;
         _ccMergeCheck.Checked = _settings.CcMergeAndReencode;
         _ccShortsCheck.Checked = _settings.CcShortsMode;
+        _autoPlaylistCheck.Checked = _settings.AutoPlaylist;
         _visibilityBox.SelectedItem = _settings.UploadVisibility;
 
         // Auto tab
@@ -3835,6 +3853,8 @@ public class MainForm : Form
                     _lastJob, _lastJob.OutputVideoPath!, _lastJob.ThumbnailPath,
                     _settings.UploadVisibility, progress, _cts.Token);
                 _logBox.AppendText($"YouTube: {url}\r\n");
+
+                await yt.AutoAddToTopicPlaylistAsync(url, _lastJob.Topic, null, progress, _cts.Token);
                 _statusLabel.Text = "Fertig + hochgeladen.";
             }
             else
@@ -4255,6 +4275,10 @@ public class MainForm : Form
                 {
                     _settings.UploadedVideoIds.Add(uploadedVideoId);
                     _settings.Save();
+
+                    // Topic playlist (AutoPlaylist) — independent of the checked list below
+                    await yt.AutoAddToTopicPlaylistAsync(
+                        uploadedVideoId, topic, accessToken, progress, CancellationToken.None);
 
                     // Add to every checked playlist from the Create-tab list
                     var checkedPlaylists = SelectedPlaylistIds();
