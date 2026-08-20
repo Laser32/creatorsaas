@@ -478,6 +478,50 @@ public class YouTubeService
     }
 
     /// <summary>
+    /// Lists every playlist on the connected channel, following pagination. Used to rebuild
+    /// the local playlists.json when it is lost — the playlists themselves live on YouTube,
+    /// the local file only holds name/ID references to them.
+    /// </summary>
+    public async Task<List<PlaylistEntry>> ListMyPlaylistsAsync(string accessToken, CancellationToken ct)
+    {
+        var result = new List<PlaylistEntry>();
+        string? pageToken = null;
+
+        do
+        {
+            var url = "https://www.googleapis.com/youtube/v3/playlists?part=snippet&mine=true&maxResults=50";
+            if (!string.IsNullOrEmpty(pageToken)) url += $"&pageToken={pageToken}";
+
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Add("Authorization", $"Bearer {accessToken}");
+            using var resp = await _http.SendAsync(req, ct);
+            var body = await resp.Content.ReadAsStringAsync(ct);
+            if (!resp.IsSuccessStatusCode)
+                throw new InvalidOperationException($"Playlists abrufen fehlgeschlagen ({(int)resp.StatusCode}): {body}");
+
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("items", out var items))
+            {
+                foreach (var item in items.EnumerateArray())
+                {
+                    var id = item.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
+                    var title = item.TryGetProperty("snippet", out var sn) &&
+                                sn.TryGetProperty("title", out var tEl) ? tEl.GetString() ?? "" : "";
+                    if (!string.IsNullOrEmpty(id))
+                        result.Add(new PlaylistEntry { Name = title, Id = id });
+                }
+            }
+
+            pageToken = root.TryGetProperty("nextPageToken", out var ptEl) ? ptEl.GetString() : null;
+        }
+        while (!string.IsNullOrEmpty(pageToken));
+
+        return result;
+    }
+
+    /// <summary>
     /// Returns the playlist ID for the given topic, creating the playlist if it doesn't exist yet.
     /// </summary>
     public async Task<string> EnsurePlaylistAsync(string topic, string accessToken, CancellationToken ct)

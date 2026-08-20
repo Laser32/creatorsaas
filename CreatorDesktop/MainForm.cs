@@ -924,6 +924,20 @@ public class MainForm : Form
         openPlBtn.Top = y; openPlBtn.Left = PadX + 420;
         openPlBtn.Click += (_, _) => OpenPlaylistsFile();
         content.Controls.Add(openPlBtn);
+        y += ButtonH + 8;
+
+        var importPlBtn = NewButton("Von YouTube importieren", 200);
+        importPlBtn.Top = y; importPlBtn.Left = PadX;
+        importPlBtn.Click += async (_, _) => await ImportPlaylistsFromYouTube(importPlBtn);
+        content.Controls.Add(importPlBtn);
+
+        content.Controls.Add(new Label
+        {
+            Text = "Holt alle Playlists des verbundenen Kanals — nützlich, wenn playlists.json fehlt.",
+            Font = FontHint, ForeColor = HintColor,
+            Top = y + 4, Left = PadX + 210, Width = innerW - 210, Height = 32,
+            TextAlign = ContentAlignment.TopLeft, AutoSize = false
+        });
         y += ButtonH + 14;
 
         ReloadPlaylistsUi();
@@ -4575,6 +4589,61 @@ public class MainForm : Form
             _playlistList.Items.Add($"{p.Name}  ({p.Id})", false);
         if (_playlists.Count == 0)
             _playlistList.Items.Add("(Noch keine Playlists — auf '+ Playlist hinzufügen' klicken)");
+    }
+
+    /// <summary>
+    /// Rebuilds playlists.json from the connected YouTube channel. Existing entries are kept:
+    /// playlists already in the list are matched by ID and only their name is refreshed, so a
+    /// manually added playlist from a different channel is never dropped.
+    /// </summary>
+    private async Task ImportPlaylistsFromYouTube(Button btn)
+    {
+        if (string.IsNullOrWhiteSpace(_settings.YouTubeRefreshToken))
+        {
+            MessageBox.Show(this,
+                "Erst im Settings-Tab mit YouTube verbinden — der Import braucht den Kanal-Zugriff.",
+                "Nicht verbunden", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        btn.Enabled = false;
+        var oldText = btn.Text;
+        btn.Text = "Importiere...";
+        var log = (IProgress<string>)new Progress<string>(AppendAutoLog);
+        try
+        {
+            var yt = new YouTubeService(_settings);
+            var token = await yt.EnsureAccessTokenAsync(log, CancellationToken.None);
+            var remote = await yt.ListMyPlaylistsAsync(token, CancellationToken.None);
+
+            int added = 0, renamed = 0;
+            foreach (var p in remote)
+            {
+                var existing = _playlists.FirstOrDefault(x => x.Id == p.Id);
+                if (existing == null) { _playlists.Add(p); added++; }
+                else if (existing.Name != p.Name) { existing.Name = p.Name; renamed++; }
+            }
+
+            AppSettings.SavePlaylists(_playlists);
+            ReloadPlaylistsUi();
+
+            var msg = $"{remote.Count} Playlists auf dem Kanal gefunden.\r\n" +
+                      $"{added} neu übernommen, {renamed} umbenannt, " +
+                      $"{remote.Count - added - renamed} unverändert.";
+            AppendAutoLog($"Playlist-Import: {msg.Replace("\r\n", " ")}");
+            MessageBox.Show(this, msg, "Import fertig", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            AppendAutoLog($"Playlist-Import fehlgeschlagen: {ex.Message}");
+            MessageBox.Show(this, ex.Message, "Import fehlgeschlagen",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            btn.Text = oldText;
+            btn.Enabled = true;
+        }
     }
 
     private void AddPlaylistViaDialog()
