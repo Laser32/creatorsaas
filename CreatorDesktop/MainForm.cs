@@ -58,6 +58,8 @@ public class MainForm : Form
 
     // Archive.org tab
     private ComboBox _archiveTopicBox = null!;
+    private ComboBox _archivePresetBox = null!;
+    private CheckBox _archiveFreeOnly = null!;
     private CheckBox _archiveGermanOnly = null!;
     private TextBox _archiveQueryBox = null!;
     private NumericUpDown _archiveYearFromBox = null!;
@@ -2063,6 +2065,44 @@ public class MainForm : Form
         content.Controls.Add(_archiveGermanOnly);
         y += InputH + 10;
 
+        // Fertige Suchen für typische Material-Kategorien
+        content.Controls.Add(new Label
+        {
+            Text = "Fertige Suche (füllt das Suchfeld):",
+            Font = FontLabel, ForeColor = TextDark,
+            Top = y, Left = PadX, Width = innerW, Height = LabelH, AutoSize = false
+        });
+        y += LabelH + 2;
+
+        _archivePresetBox = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Font = FontBase, Top = y, Left = PadX, Width = innerW - 260, Height = InputH
+        };
+        foreach (var p in ArchiveOrgService.Presets) _archivePresetBox.Items.Add(p.Name);
+        _archivePresetBox.SelectedIndex = 0;
+        _archivePresetBox.SelectedIndexChanged += (_, _) =>
+        {
+            // The query box and status label are built further down — guard in case the
+            // layout order ever changes and this fires before they exist.
+            if (_archiveQueryBox == null || _archiveStatusLabel == null) return;
+            var idx = _archivePresetBox.SelectedIndex;
+            if (idx < 0 || idx >= ArchiveOrgService.Presets.Length) return;
+            var preset = ArchiveOrgService.Presets[idx];
+            if (!string.IsNullOrEmpty(preset.Query)) _archiveQueryBox.Text = preset.Query;
+            _archiveStatusLabel.Text = preset.Hint;
+        };
+        content.Controls.Add(_archivePresetBox);
+
+        _archiveFreeOnly = new CheckBox
+        {
+            Text = "Nur freie Lizenzen",
+            Font = FontLabel, ForeColor = TextDark, Checked = true,
+            Top = y + 2, Left = PadX + innerW - 250, Width = 250, Height = 26, AutoSize = false
+        };
+        content.Controls.Add(_archiveFreeOnly);
+        y += InputH + 10;
+
         // Search field
         content.Controls.Add(new Label
         {
@@ -2193,10 +2233,15 @@ public class MainForm : Form
                 germanOnly: _archiveGermanOnly.Checked);
 
             var historyIds = new HashSet<string>(_settings.DownloadedVideoIds);
-            int green = 0, yellow = 0, redCnt = 0, grey = 0;
+            int green = 0, yellow = 0, redCnt = 0, grey = 0, hidden = 0;
+            var freeOnly = _archiveFreeOnly.Checked;
             _archiveListView.BeginUpdate();
             foreach (var it in items)
             {
+                var isFree = it.License is ArchiveOrgService.LicenseClass.PublicDomain
+                                        or ArchiveOrgService.LicenseClass.CreativeCommons;
+                if (freeOnly && !isFree) { hidden++; continue; }
+
                 var row = new ListViewItem(it.Title);
                 row.SubItems.Add(it.Year?.ToString() ?? "");
                 row.SubItems.Add(it.DurationSeconds > 0 ? FormatDuration(it.DurationSeconds) : "");
@@ -2234,9 +2279,10 @@ public class MainForm : Form
                 _archiveListView.Items.Add(row);
             }
             _archiveListView.EndUpdate();
-            _archiveStatusLabel.Text =
-                $"{items.Count} Treffer — 🟢 {green} frei · 🟡 {yellow} nicht-kommerziell · ⚪ {grey} unbekannt · 🔴 {redCnt} geschützt";
-            _archiveDownloadBtn.Enabled = items.Count > 0;
+            _archiveStatusLabel.Text = freeOnly
+                ? $"{items.Count} Treffer — 🟢 {green} frei angezeigt, {hidden} ohne freie Lizenz ausgeblendet"
+                : $"{items.Count} Treffer — 🟢 {green} frei · 🟡 {yellow} nicht-kommerziell · ⚪ {grey} unbekannt · 🔴 {redCnt} geschützt";
+            _archiveDownloadBtn.Enabled = _archiveListView.Items.Count > 0;
         }
         catch (Exception ex)
         {
@@ -2254,6 +2300,16 @@ public class MainForm : Form
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
+
+        // Column 3 holds the licence label; free ones are the "✓ …" rows.
+        var unfree = checkedRows.Count(r => r.SubItems.Count > 3 && !r.SubItems[3].Text.StartsWith('✓'));
+        if (unfree > 0 &&
+            MessageBox.Show(this,
+                $"{unfree} der {checkedRows.Count} markierten Videos haben keine nachweislich freie Lizenz.\r\n\r\n" +
+                "Ein Upload auf deinen Kanal kann eine Urheberrechtsbeschwerde auslösen.\r\n\r\n" +
+                "Trotzdem herunterladen?",
+                "Lizenz prüfen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
 
         _archiveDownloadBtn.Enabled = false;
         _archiveSearchBtn.Enabled = false;

@@ -33,6 +33,59 @@ public class ArchiveOrgService
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
 
+    /// <summary>A ready-made search for one kind of footage.</summary>
+    public record SourcePreset(string Name, string Query, string Hint);
+
+    /// <summary>
+    /// Curated searches for the dramatic US footage that does well on documentary channels.
+    ///
+    /// Deliberately written as keyword queries rather than collection:(…) identifiers. A
+    /// mistyped collection name returns zero hits and looks like "nothing exists", while a
+    /// keyword still matches title and description. Where a collection is well known it is
+    /// OR-ed with the keyword so the query survives either way.
+    ///
+    /// None of these guarantee a free licence — the licence class per hit does, and the
+    /// "nur freie Lizenzen" filter in the UI is what actually keeps unusable material out.
+    /// </summary>
+    public static readonly SourcePreset[] Presets =
+    {
+        new("— eigenes Stichwort —", "", "Freie Eingabe im Suchfeld unten."),
+
+        new("Polizei & Einsatzfahrten (US)",
+            "(police OR sheriff OR \"state patrol\" OR \"highway patrol\") AND " +
+            "(dashcam OR \"dash cam\" OR pursuit OR chase OR patrol OR arrest)",
+            "Behördenmaterial ist häufig frei — TV-Aufnahmen derselben Einsätze nie."),
+
+        new("Bodycam & Dashcam",
+            "(bodycam OR \"body camera\" OR \"body worn\" OR dashcam OR \"dash cam\" OR \"in-car video\")",
+            "Oft aus Public-Records-Freigaben einzelner Departments."),
+
+        new("Feuerwehr & Rettung",
+            "(\"fire department\" OR firefighter OR rescue OR \"emergency response\" OR paramedic)",
+            "Viel Material von Bundes- und Kommunalbehörden."),
+
+        new("Katastrophen & Unwetter (US)",
+            "(hurricane OR tornado OR wildfire OR flood OR earthquake OR \"storm damage\")",
+            "NOAA und FEMA sind Bundesbehörden — deren Aufnahmen sind gemeinfrei."),
+
+        new("Flug- & Unfalluntersuchung",
+            "(NTSB OR \"aircraft accident\" OR \"crash test\" OR \"accident investigation\" OR derailment)",
+            "NTSB-Material ist als Bundesbehörde gemeinfrei."),
+
+        new("Militär & Küstenwache (US)",
+            "(\"U.S. Navy\" OR \"U.S. Air Force\" OR \"Marine Corps\" OR \"Coast Guard\" OR " +
+            "\"combat camera\" OR \"Department of Defense\")",
+            "Werke von US-Bundesbehörden: gemeinfrei nach 17 U.S.C. §105."),
+
+        new("NASA & Raumfahrt",
+            "(collection:(nasa) OR NASA OR \"space shuttle\" OR Apollo OR \"launch footage\")",
+            "Gemeinfrei, Bild- und Tonqualität meist sehr gut."),
+
+        new("Wochenschauen & Archivfilm",
+            "(newsreel OR \"news reel\" OR collection:(prelinger) OR \"stock footage\")",
+            "Historisches Material, oft eindeutig gemeinfrei.")
+    };
+
     /// <summary>
     /// Searches movies/films on archive.org. yearFrom/yearTo are optional —
     /// e.g. (1900, 1928) returns only definitely-public-domain content.
