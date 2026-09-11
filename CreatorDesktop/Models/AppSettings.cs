@@ -144,6 +144,10 @@ public class AppSettings
     // Path to a Netscape-format cookies.txt (fallback if no browser is set).
     public string YtDlpCookiesPath { get; set; } = "";
 
+    // Channels the user pulls footage from, as entered in the Create tab (URL, @handle or
+    // UC… ID). Purely a convenience list — the licence check still decides per video.
+    public List<CompetitorChannel> SourceChannels { get; set; } = new();
+
     // Keep yt-dlp.exe current (checked once per week, plus immediately after an HTTP 403).
     // YouTube changes its player API constantly — an outdated yt-dlp is the usual cause of
     // "HTTP Error 403: Forbidden". Only turn this off if you manage yt-dlp.exe yourself.

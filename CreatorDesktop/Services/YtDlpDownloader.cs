@@ -251,6 +251,106 @@ public static class YtDlpDownloader
     }
 
     /// <summary>
+    /// Lists the videos of one channel, newest first, without the YouTube API. Accepts
+    /// anything the user is likely to paste: a full channel URL, an @handle, a bare handle
+    /// or a UC… channel ID. Pass shortsOnly to read the channel's Shorts tab instead.
+    ///
+    /// The licence is NOT checked here — yt-dlp skips per-video metadata in flat-playlist
+    /// mode. Use GetVideoInfoAsync (the "Lizenzen prüfen" button) on the rows that matter.
+    /// </summary>
+    public static async Task<List<(string id, string title, int durationSeconds)>> ListChannelVideosAsync(
+        string channel, int maxResults, bool shortsOnly, IProgress<string>? log, CancellationToken ct)
+    {
+        var ytDlp = await EnsureAsync(log, ct);
+        var url = BuildChannelUrl(channel, shortsOnly);
+        if (url == null)
+            throw new InvalidOperationException(
+                "Kanal nicht erkannt. Erlaubt sind: Kanal-URL, @handle oder eine UC…-Kanal-ID.");
+
+        var args = $"--flat-playlist --dump-json --no-warnings " +
+                   $"--playlist-end {Math.Max(1, maxResults)} " +
+                   CookieArg() +
+                   $"\"{url}\"";
+        log?.Report($"  Kanal: {url}");
+
+        var (rawLines, stderr, exit) = await RunYtDlpAsync(ytDlp, args, log, ct);
+
+        var results = new List<(string, string, int)>();
+        foreach (var line in rawLines)
+        {
+            if (string.IsNullOrWhiteSpace(line) || line[0] != '{') continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+                var id = root.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
+                var title = root.TryGetProperty("title", out var tEl) ? tEl.GetString() ?? "" : "";
+                int dur = 0;
+                if (root.TryGetProperty("duration", out var dEl) && dEl.ValueKind == JsonValueKind.Number)
+                    dur = (int)dEl.GetDouble();
+                if (!string.IsNullOrEmpty(id))
+                    results.Add((id, title, dur));
+            }
+            catch { /* skip malformed lines */ }
+        }
+
+        if (exit != 0 && results.Count == 0)
+            throw new InvalidOperationException($"yt-dlp Fehler: {DescribeFailure(stderr)}");
+
+        log?.Report($"  {results.Count} Videos im Kanal gefunden.");
+        return results;
+    }
+
+    /// <summary>
+    /// Turns user input into a channel tab URL. Returns null when the input cannot be a
+    /// channel, so the caller can say so instead of sending yt-dlp at a nonsense URL.
+    /// </summary>
+    public static string? BuildChannelUrl(string input, bool shortsOnly)
+    {
+        var s = (input ?? "").Trim();
+        if (s.Length == 0) return null;
+
+        var tab = shortsOnly ? "shorts" : "videos";
+
+        // Full URL — keep the channel part, replace whatever tab it carries.
+        if (s.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            s.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+            s.StartsWith("www.youtube.com", StringComparison.OrdinalIgnoreCase) ||
+            s.StartsWith("youtube.com", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!s.Contains("youtube.com", StringComparison.OrdinalIgnoreCase)) return null;
+
+            var path = s;
+            var schemeIdx = path.IndexOf("youtube.com", StringComparison.OrdinalIgnoreCase);
+            path = path[(schemeIdx + "youtube.com".Length)..];        // "/@name/videos?x=1"
+            var q = path.IndexOfAny(['?', '#']);
+            if (q >= 0) path = path[..q];
+            path = path.Trim('/');
+
+            var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length == 0) return null;
+
+            // Keep "channel/UC…", "@handle", "c/Name", "user/Name" — drop a trailing tab.
+            var keep = segments[0].StartsWith('@')
+                ? segments.Take(1)
+                : segments.Take(segments.Length >= 2 ? 2 : 1);
+            var basePath = string.Join('/', keep);
+            if (basePath.Length == 0) return null;
+
+            return $"https://www.youtube.com/{basePath}/{tab}";
+        }
+
+        // Bare channel ID
+        if (s.StartsWith("UC", StringComparison.Ordinal) && s.Length >= 20 && !s.Contains(' '))
+            return $"https://www.youtube.com/channel/{s}/{tab}";
+
+        // @handle or bare handle — handles have no spaces
+        if (s.Contains(' ')) return null;
+        var handle = s.StartsWith('@') ? s : "@" + s;
+        return $"https://www.youtube.com/{handle}/{tab}";
+    }
+
+    /// <summary>
     /// Downloads a YouTube video as a single merged MP4 (video + audio, up to 1080p).
     /// Passes --ffmpeg-location so yt-dlp can merge the streams even when ffmpeg is not
     /// on the system PATH; falls back to a pre-muxed format if ffmpeg is not yet downloaded.

@@ -35,6 +35,8 @@ public class MainForm : Form
     private Label _seasonalLabel = null!;
     private System.Windows.Forms.Timer? _seasonalTimer;
     private Button _searchVideosBtn = null!;
+    private ComboBox _channelBox = null!;
+    private Button _channelSearchBtn = null!;
     private ListView _videoListView = null!;
     private Button _selectAllBtn = null!;
     private Button _selectNoneBtn = null!;
@@ -728,11 +730,44 @@ public class MainForm : Form
         _checkLicensesBtn.Click += async (_, _) => await CheckLicensesAsync();
         content.Controls.Add(_checkLicensesBtn);
 
-        y += ButtonH + 6;
+        y += ButtonH + 10;
+
+        // ── Kanal-Suche: gleiche Trefferliste, andere Quelle ────────────────
+        content.Controls.Add(new Label
+        {
+            Text = "Oder einen Kanal durchsuchen (URL, @handle oder UC…-ID):",
+            Font = FontLabel, ForeColor = TextDark,
+            Top = y, Left = PadX, Width = innerW, Height = LabelH,
+            TextAlign = ContentAlignment.MiddleLeft, AutoSize = false
+        });
+        y += LabelH + 2;
+
+        _channelBox = NewEditableCombo("", []);
+        _channelBox.Top = y + 4; _channelBox.Left = PadX;
+        _channelBox.Width = innerW - 430;
+        content.Controls.Add(_channelBox);
+
+        _channelSearchBtn = NewPrimaryButton("📺  Kanal laden", 150);
+        _channelSearchBtn.Top = y; _channelSearchBtn.Left = PadX + innerW - 420;
+        _channelSearchBtn.Click += async (_, _) => await SearchChannelVideos();
+        content.Controls.Add(_channelSearchBtn);
+
+        var saveChannelBtn = NewButton("Merken", 110);
+        saveChannelBtn.Top = y; saveChannelBtn.Left = PadX + innerW - 262;
+        saveChannelBtn.Click += (_, _) => SaveCurrentChannel();
+        content.Controls.Add(saveChannelBtn);
+
+        var forgetChannelBtn = NewButton("Entfernen", 110);
+        forgetChannelBtn.Top = y; forgetChannelBtn.Left = PadX + innerW - 144;
+        forgetChannelBtn.Click += (_, _) => ForgetCurrentChannel();
+        content.Controls.Add(forgetChannelBtn);
+
+        ReloadChannelBox();
+        y += ButtonH + 8;
 
         _searchStatusLabel = new Label
         {
-            Text = "Thema wählen → 'Suchen' → Videos markieren → 'Herunterladen'",
+            Text = "Thema oder Kanal wählen → laden → Lizenzen prüfen → markieren → 'Herunterladen'",
             Font = FontHint, ForeColor = TextMuted,
             Top = y, Left = PadX, Width = innerW, Height = HintH, AutoSize = false
         };
@@ -3970,37 +4005,7 @@ public class MainForm : Form
             if (isShorts)
                 videos = videos.Where(v => v.durationSeconds is > 0 and <= 60).ToList();
 
-            var historyIds = new HashSet<string>(_settings.DownloadedVideoIds);
-
-            _videoListView.BeginUpdate();
-            int alreadyDl = 0;
-            foreach (var (id, title, dur) in videos)
-            {
-                var item = new ListViewItem(title);
-                item.SubItems.Add(FormatDuration(dur));
-                item.SubItems.Add(id);
-                if (historyIds.Contains(id))
-                {
-                    item.ForeColor = Color.FromArgb(180, 60, 60);   // red — already downloaded
-                    item.SubItems[0].Text = "✓ " + title;
-                    item.ToolTipText = "Bereits heruntergeladen";
-                    alreadyDl++;
-                }
-                else
-                {
-                    item.ForeColor = Color.FromArgb(80, 80, 80);    // neutral grey — license not yet checked
-                }
-                _videoListView.Items.Add(item);
-            }
-            _videoListView.ShowItemToolTips = true;
-            _videoListView.EndUpdate();
-
-            var hint = alreadyDl > 0 ? $" ({alreadyDl} bereits heruntergeladen, rot markiert)" : "";
-            _searchStatusLabel.Text = videos.Count > 0
-                ? $"{videos.Count} Videos gefunden{hint}. Klicke 'Lizenzen prüfen' für Farbcodierung (grün/gelb/rot)."
-                : $"Keine Videos gefunden. Anderes Thema versuchen.";
-            _downloadCheckedBtn.Enabled = videos.Count > 0;
-            _checkLicensesBtn.Enabled = videos.Count > 0;
+            FillVideoList(videos, "Anderes Thema versuchen.");
         }
         catch (Exception ex)
         {
@@ -4010,6 +4015,145 @@ public class MainForm : Form
         {
             _searchVideosBtn.Enabled = true;
         }
+    }
+
+    /// <summary>
+    /// Loads one channel's videos into the same result list the topic search fills, so the
+    /// licence check, the download button and the history marking all work unchanged.
+    /// </summary>
+    private async Task SearchChannelVideos()
+    {
+        var channel = _channelBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(channel))
+        {
+            MessageBox.Show(this,
+                "Bitte einen Kanal eingeben — Kanal-URL, @handle oder UC…-ID.",
+                "Kein Kanal", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        _channelSearchBtn.Enabled = false;
+        _searchVideosBtn.Enabled = false;
+        _searchStatusLabel.Text = "Kanal wird gelesen — bitte warten...";
+        _videoListView.Items.Clear();
+        _downloadCheckedBtn.Enabled = false;
+        _checkLicensesBtn.Enabled = false;
+
+        try
+        {
+            var logProgress = new Progress<string>(s => _searchStatusLabel.Text = s);
+            var isShorts = _settings.CcShortsMode;
+
+            var videos = await YtDlpDownloader.ListChannelVideosAsync(
+                channel, (int)_maxResultsBox.Value, isShorts, logProgress, CancellationToken.None);
+
+            if (isShorts)
+                videos = videos.Where(v => v.durationSeconds is 0 or (> 0 and <= 60)).ToList();
+
+            FillVideoList(videos, "Kanal leer oder nicht erreichbar — Schreibweise prüfen.");
+        }
+        catch (Exception ex)
+        {
+            _searchStatusLabel.Text = $"Fehler: {ex.Message}";
+        }
+        finally
+        {
+            _channelSearchBtn.Enabled = true;
+            _searchVideosBtn.Enabled = true;
+        }
+    }
+
+    /// <summary>
+    /// Renders search hits into the result list. Rows start neutral grey — the licence is
+    /// unknown until "Lizenzen prüfen" runs; already downloaded videos are marked red.
+    /// </summary>
+    private void FillVideoList(
+        List<(string id, string title, int durationSeconds)> videos, string emptyHint)
+    {
+        var historyIds = new HashSet<string>(_settings.DownloadedVideoIds);
+
+        _videoListView.BeginUpdate();
+        int alreadyDl = 0;
+        foreach (var (id, title, dur) in videos)
+        {
+            var item = new ListViewItem(title);
+            item.SubItems.Add(dur > 0 ? FormatDuration(dur) : "");
+            item.SubItems.Add(id);
+            if (historyIds.Contains(id))
+            {
+                item.ForeColor = Color.FromArgb(180, 60, 60);   // red — already downloaded
+                item.SubItems[0].Text = "✓ " + title;
+                item.ToolTipText = "Bereits heruntergeladen";
+                alreadyDl++;
+            }
+            else
+            {
+                item.ForeColor = Color.FromArgb(80, 80, 80);    // neutral grey — license not yet checked
+            }
+            _videoListView.Items.Add(item);
+        }
+        _videoListView.ShowItemToolTips = true;
+        _videoListView.EndUpdate();
+
+        var hint = alreadyDl > 0 ? $" ({alreadyDl} bereits heruntergeladen, rot markiert)" : "";
+        _searchStatusLabel.Text = videos.Count > 0
+            ? $"{videos.Count} Videos gefunden{hint}. Klicke 'Lizenzen prüfen' für Farbcodierung (grün/gelb/rot)."
+            : $"Keine Videos gefunden. {emptyHint}";
+        _downloadCheckedBtn.Enabled = videos.Count > 0;
+        _checkLicensesBtn.Enabled = videos.Count > 0;
+    }
+
+    private void ReloadChannelBox()
+    {
+        var current = _channelBox.Text;
+        _channelBox.Items.Clear();
+        foreach (var c in _settings.SourceChannels)
+            _channelBox.Items.Add(c.ChannelId);
+        _channelBox.Text = current;
+    }
+
+    private void SaveCurrentChannel()
+    {
+        var channel = _channelBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(channel)) return;
+
+        // Reject input that cannot be a channel before it lands in the saved list.
+        if (YtDlpDownloader.BuildChannelUrl(channel, false) == null)
+        {
+            MessageBox.Show(this,
+                "Das sieht nicht nach einem Kanal aus. Erlaubt sind Kanal-URL, @handle oder UC…-ID.",
+                "Nicht erkannt", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (_settings.SourceChannels.Any(c => string.Equals(c.ChannelId, channel, StringComparison.OrdinalIgnoreCase)))
+        {
+            _searchStatusLabel.Text = "Kanal ist schon gemerkt.";
+            return;
+        }
+
+        _settings.SourceChannels.Add(new CompetitorChannel { Name = channel, ChannelId = channel });
+        _settings.Save();
+        ReloadChannelBox();
+        _searchStatusLabel.Text = $"Kanal gemerkt ({_settings.SourceChannels.Count} gespeichert).";
+    }
+
+    private void ForgetCurrentChannel()
+    {
+        var channel = _channelBox.Text.Trim();
+        var hit = _settings.SourceChannels
+            .FirstOrDefault(c => string.Equals(c.ChannelId, channel, StringComparison.OrdinalIgnoreCase));
+        if (hit == null)
+        {
+            _searchStatusLabel.Text = "Dieser Kanal ist nicht in der Liste.";
+            return;
+        }
+
+        _settings.SourceChannels.Remove(hit);
+        _settings.Save();
+        _channelBox.Text = "";
+        ReloadChannelBox();
+        _searchStatusLabel.Text = $"Kanal entfernt ({_settings.SourceChannels.Count} übrig).";
     }
 
     /// <summary>
